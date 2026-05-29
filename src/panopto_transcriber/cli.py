@@ -12,10 +12,17 @@ from .transcribers import get_transcriber
 
 
 def _dump_tokens(cfg: Config) -> None:
-    """Persist Canvas token and Panopto browser cookies to `.tokens/` for manual reuse."""
+    """Persist Canvas token and Panopto browser cookies to `.tokens/` for manual reuse.
+
+    Skips browser-cookie extraction when `COOKIES_FILE` is set, since on a
+    headless server there is no browser to read from.
+    """
     canvas_path = save_canvas_token(cfg.canvas_token)
     if canvas_path:
         click.echo(f"Canvas token saved: {canvas_path}")
+    if cfg.cookies_file:
+        click.echo(f"Using Panopto cookies file: {cfg.cookies_file}")
+        return
     try:
         panopto_path = save_panopto_cookies(
             cfg.cookies_browser, cfg.cookies_profile, cfg.panopto_host
@@ -75,6 +82,7 @@ def download(session_or_url: str) -> None:
         panopto_host=cfg.panopto_host,
         cookies_browser=cfg.cookies_browser,
         cookies_profile=cfg.cookies_profile,
+        cookies_file=cfg.cookies_file,
     )
     click.echo(f"Saved: {out}")
 
@@ -108,6 +116,7 @@ def run(session_or_url: str, backend: str | None, model: str | None) -> None:
         panopto_host=cfg.panopto_host,
         cookies_browser=cfg.cookies_browser,
         cookies_profile=cfg.cookies_profile,
+        cookies_file=cfg.cookies_file,
     )
     t = _make_transcriber(cfg, backend, model)
     click.echo(f"Transcribing with {t.name}...")
@@ -135,6 +144,7 @@ def download_folder_cmd(folder_or_url: str) -> None:
         panopto_host=cfg.panopto_host,
         cookies_browser=cfg.cookies_browser,
         cookies_profile=cfg.cookies_profile,
+        cookies_file=cfg.cookies_file,
     )
     click.echo(f"Downloaded {len(paths)} new file(s) to {cfg.download_dir}")
 
@@ -175,6 +185,7 @@ def run_folder_cmd(folder_or_url: str, backend: str | None, model: str | None) -
         panopto_host=cfg.panopto_host,
         cookies_browser=cfg.cookies_browser,
         cookies_profile=cfg.cookies_profile,
+        cookies_file=cfg.cookies_file,
     )
     t = _make_transcriber(cfg, backend, model)
     click.echo(f"Transcribing all media in {cfg.download_dir} with {t.name}...")
