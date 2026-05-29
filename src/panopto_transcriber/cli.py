@@ -4,7 +4,7 @@ from pathlib import Path
 
 import click
 
-from .batch import transcribe_directory
+from .batch import run_folder_streaming, transcribe_directory
 from .config import Config
 from .downloader import download_folder, download_session
 from .tokens import save_canvas_token, save_panopto_cookies
@@ -172,12 +172,49 @@ def transcribe_dir_cmd(in_dir: Path | None, backend: str | None, model: str | No
 
 @main.command("run-folder")
 @click.argument("folder_or_url")
+@click.option(
+    "--delete-after",
+    is_flag=True,
+    default=False,
+    help="Stream one session at a time: download → transcribe → delete the "
+    "media file before moving on. Useful on disk-constrained machines.",
+)
 @_BACKEND
 @_MODEL
-def run_folder_cmd(folder_or_url: str, backend: str | None, model: str | None) -> None:
-    """Download all sessions in a Panopto folder, then transcribe them all."""
+def run_folder_cmd(
+    folder_or_url: str,
+    delete_after: bool,
+    backend: str | None,
+    model: str | None,
+) -> None:
+    """Download all sessions in a Panopto folder, then transcribe them all.
+
+    With ``--delete-after``, switches to a streaming flow that downloads,
+    transcribes, and deletes each media file one at a time.
+    """
     cfg = Config.load()
     _dump_tokens(cfg)
+    t = _make_transcriber(cfg, backend, model)
+
+    if delete_after:
+        click.echo(
+            f"Streaming folder through {t.name}: "
+            f"download → transcribe → delete, one session at a time."
+        )
+        results = run_folder_streaming(
+            folder_or_url,
+            cfg.download_dir,
+            cfg.transcript_dir,
+            t,
+            panopto_host=cfg.panopto_host,
+            cookies_browser=cfg.cookies_browser,
+            cookies_profile=cfg.cookies_profile,
+            cookies_file=cfg.cookies_file,
+            delete_media=True,
+        )
+        click.echo(f"Done. {len(results)} new transcript(s) in {cfg.transcript_dir}")
+        return
+
     click.echo(f"Downloading folder to {cfg.download_dir}...")
     download_folder(
         folder_or_url,
@@ -187,7 +224,6 @@ def run_folder_cmd(folder_or_url: str, backend: str | None, model: str | None) -
         cookies_profile=cfg.cookies_profile,
         cookies_file=cfg.cookies_file,
     )
-    t = _make_transcriber(cfg, backend, model)
     click.echo(f"Transcribing all media in {cfg.download_dir} with {t.name}...")
     results = transcribe_directory(cfg.download_dir, t, cfg.transcript_dir)
     click.echo(f"Done. {len(results)} new transcript(s) in {cfg.transcript_dir}")

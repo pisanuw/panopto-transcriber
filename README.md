@@ -100,9 +100,13 @@ uv run panopto-transcriber transcribe-dir
 
 # both, in one command:
 uv run panopto-transcriber run-folder "<folder-url-or-guid>"
+
+# streaming mode: download → transcribe → delete each media file before
+# moving on (one video on disk at a time). Useful on disk-constrained servers:
+uv run panopto-transcriber run-folder "<folder-url-or-guid>" --delete-after
 ```
 
-Reruns are idempotent: yt-dlp tracks completed downloads in `<DOWNLOAD_DIR>/.yt-dlp-archive.txt`, and transcription skips any media that already has a `.txt` in `TRANSCRIPT_DIR`. Safe to re-run after new lectures are posted.
+Reruns are idempotent: yt-dlp tracks completed downloads in `<DOWNLOAD_DIR>/.yt-dlp-archive.txt`, and transcription skips any media that already has a `.txt` in `TRANSCRIPT_DIR`. Safe to re-run after new lectures are posted. With `--delete-after`, the archive still records each session, so a re-run won't re-download anything that's already been transcribed.
 
 ## Troubleshooting
 
@@ -129,6 +133,7 @@ src/panopto_transcriber/
 ## Roadmap
 
 - [x] Batch download + transcribe an entire Panopto folder
+- [x] Streaming mode (`--delete-after`) for disk-constrained machines
 - [ ] Canvas client: given a Canvas course ID, auto-discover the Panopto folder
 - [ ] `panopto-transcriber run-course <canvas-course-id>` as a thin wrapper
 - [ ] Optional: download Panopto auto-captions as a "free" transcription source

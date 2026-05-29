@@ -6,7 +6,18 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadError
+
 from ._progress import fmt_duration
+from .downloader import (
+    _enumerate_folder,
+    _expired_session_error,
+    _extract_filepath,
+    _folder_url,
+    _viewer_url,
+    _ydl_opts,
+)
 from .transcribers.base import Transcriber, TranscriptionResult
 
 MEDIA_EXTENSIONS = {".mp4", ".m4a", ".mp3", ".wav", ".mkv", ".webm", ".mov"}
@@ -78,6 +89,112 @@ def transcribe_directory(
     total = time.monotonic() - batch_start
     print(
         f"Transcribed {len(results)} file(s) in {fmt_duration(total)}"
+        + (f"; {failures} failure(s)" if failures else "")
+    )
+    return results
+
+
+def run_folder_streaming(
+    folder_or_url: str,
+    out_dir: Path,
+    transcript_dir: Path,
+    transcriber: Transcriber,
+    *,
+    panopto_host: str,
+    cookies_browser: str,
+    cookies_profile: str | None,
+    cookies_file: Path | None,
+    delete_media: bool,
+) -> list[TranscriptionResult]:
+    """For each session in `folder_or_url`: download → transcribe → optionally delete.
+
+    Designed for disk-constrained machines: only one media file lives on disk
+    at a time when `delete_media=True`. Already-downloaded sessions (per the
+    yt-dlp archive) are skipped at the download step; already-transcribed
+    media (per a matching `.txt` in `transcript_dir`) skips the transcribe
+    step and still gets deleted when `delete_media=True`.
+    """
+    folder_url = _folder_url(panopto_host, folder_or_url)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    transcript_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Listing folder {folder_url} ...")
+    entries = _enumerate_folder(
+        folder_url, out_dir, cookies_browser, cookies_profile, cookies_file, panopto_host
+    )
+    if not entries:
+        print("Folder is empty or could not be enumerated.")
+        return []
+
+    n = len(entries)
+    mode = "delete-after-transcribe" if delete_media else "keep-media"
+    print(f"Folder contains {n} session(s). Streaming mode ({mode}).")
+
+    opts = _ydl_opts(out_dir, cookies_browser, cookies_profile, cookies_file)
+
+    results: list[TranscriptionResult] = []
+    failures = 0
+    batch_start = time.monotonic()
+
+    for i, entry in enumerate(entries, start=1):
+        session_url = entry.get("url") or _viewer_url(panopto_host, entry.get("id", ""))
+        title = entry.get("title") or entry.get("id") or session_url
+        prefix = f"[{i}/{n}]"
+        print(f"{prefix} {title}")
+
+        session_start = time.monotonic()
+
+        media_path: Path | None = None
+        try:
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(session_url, download=True)
+            media_path = _extract_filepath(info or {})
+        except DownloadError as e:
+            msg = str(e)
+            if "cookies" in msg.lower() or "login" in msg.lower() or "403" in msg:
+                raise _expired_session_error(
+                    panopto_host, cookies_browser, cookies_file, msg
+                ) from e
+            failures += 1
+            print(f"{prefix} download FAILED: {msg}")
+            continue
+
+        if not media_path or not media_path.exists():
+            print(f"{prefix} already in download archive; skipping")
+            continue
+
+        if already_transcribed(media_path, transcript_dir):
+            print(f"{prefix} transcript already exists, skipping transcribe step")
+        else:
+            try:
+                result = transcriber.transcribe(media_path, transcript_dir)
+                results.append(result)
+            except Exception as e:  # noqa: BLE001 — keep going on per-session failures
+                failures += 1
+                print(f"{prefix} transcription FAILED: {e}")
+                continue
+
+        if delete_media:
+            try:
+                media_path.unlink()
+                print(f"{prefix} deleted {media_path.name}")
+            except OSError as e:
+                print(f"{prefix} could not delete {media_path}: {e}")
+
+        now = time.monotonic()
+        elapsed = now - session_start
+        total_elapsed = now - batch_start
+        avg = total_elapsed / i
+        eta = (n - i) * avg
+        print(
+            f"{prefix} done in {fmt_duration(elapsed)}. "
+            f"Elapsed: {fmt_duration(total_elapsed)}. "
+            f"ETA: {fmt_duration(eta)} (avg {fmt_duration(avg)}/session)"
+        )
+
+    total = time.monotonic() - batch_start
+    print(
+        f"Streamed {len(results)} session(s) in {fmt_duration(total)}"
         + (f"; {failures} failure(s)" if failures else "")
     )
     return results
