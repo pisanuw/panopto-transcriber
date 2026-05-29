@@ -7,7 +7,31 @@ import click
 from .batch import transcribe_directory
 from .config import Config
 from .downloader import download_folder, download_session
+from .tokens import save_canvas_token, save_panopto_cookies
 from .transcribers import get_transcriber
+
+
+def _dump_tokens(cfg: Config) -> None:
+    """Persist Canvas token and Panopto browser cookies to `.tokens/` for manual reuse."""
+    canvas_path = save_canvas_token(cfg.canvas_token)
+    if canvas_path:
+        click.echo(f"Canvas token saved: {canvas_path}")
+    try:
+        panopto_path = save_panopto_cookies(
+            cfg.cookies_browser, cfg.cookies_profile, cfg.panopto_host
+        )
+    except Exception as e:
+        click.echo(f"Could not extract Panopto cookies: {e}", err=True)
+        return
+    if panopto_path:
+        click.echo(f"Panopto cookies saved: {panopto_path}")
+    else:
+        profile = cfg.cookies_profile or "default"
+        click.echo(
+            f"No Panopto cookies found in {cfg.cookies_browser} ({profile}). "
+            "Sign in to Panopto in that browser/profile.",
+            err=True,
+        )
 
 
 def _make_transcriber(cfg: Config, backend: str | None, model: str | None):
@@ -44,6 +68,7 @@ def main() -> None:
 def download(session_or_url: str) -> None:
     """Download one Panopto session by ID or viewer URL."""
     cfg = Config.load()
+    _dump_tokens(cfg)
     out = download_session(
         session_or_url,
         cfg.download_dir,
@@ -76,6 +101,7 @@ def transcribe(media_path: Path, backend: str | None, model: str | None) -> None
 def run(session_or_url: str, backend: str | None, model: str | None) -> None:
     """Download one session and transcribe it end-to-end."""
     cfg = Config.load()
+    _dump_tokens(cfg)
     media = download_session(
         session_or_url,
         cfg.download_dir,
@@ -102,6 +128,7 @@ def download_folder_cmd(folder_or_url: str) -> None:
     Already-downloaded sessions are skipped (yt-dlp archive in DOWNLOAD_DIR).
     """
     cfg = Config.load()
+    _dump_tokens(cfg)
     paths = download_folder(
         folder_or_url,
         cfg.download_dir,
@@ -140,6 +167,7 @@ def transcribe_dir_cmd(in_dir: Path | None, backend: str | None, model: str | No
 def run_folder_cmd(folder_or_url: str, backend: str | None, model: str | None) -> None:
     """Download all sessions in a Panopto folder, then transcribe them all."""
     cfg = Config.load()
+    _dump_tokens(cfg)
     click.echo(f"Downloading folder to {cfg.download_dir}...")
     download_folder(
         folder_or_url,

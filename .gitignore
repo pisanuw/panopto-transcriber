@@ -13,6 +13,7 @@ __pycache__/
 # secrets / state
 .env
 .panopto-token.json
+.tokens/
 
 # media + outputs
 downloads/
