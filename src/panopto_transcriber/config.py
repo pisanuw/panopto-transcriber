@@ -14,6 +14,7 @@ class Config:
     panopto_host: str
     cookies_browser: str
     cookies_profile: str | None
+    cookies_file: Path | None
 
     canvas_url: str
     canvas_token: str
@@ -39,10 +40,14 @@ class Config:
 
         profile = os.getenv("COOKIES_PROFILE") or None
 
+        cookies_file_env = (os.getenv("COOKIES_FILE") or "").strip()
+        cookies_file = Path(cookies_file_env).expanduser() if cookies_file_env else None
+
         return cls(
             panopto_host=os.getenv("PANOPTO_HOST", "uw.hosted.panopto.com"),
             cookies_browser=os.getenv("COOKIES_BROWSER", "chrome"),
             cookies_profile=profile,
+            cookies_file=cookies_file,
             canvas_url=os.getenv("CANVAS_URL", "https://canvas.uw.edu"),
             canvas_token=os.getenv("CANVAS_TOKEN", ""),
             download_dir=download_dir,

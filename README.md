@@ -108,6 +108,7 @@ Reruns are idempotent: yt-dlp tracks completed downloads in `<DOWNLOAD_DIR>/.yt-
 
 - **`Panopto download failed — your browser session may have expired`** — open Panopto in your browser, sign in, retry.
 - **`could not find chrome cookies database`** — your Chrome profile path is non-default. Set `COOKIES_PROFILE` to the profile folder name (e.g., `Profile 1`).
+- **Running on a headless server (no browser installed)** — run any download command on your desktop first; this writes `.tokens/panopto_cookies.txt` (Netscape format). Copy that file to the server and set `COOKIES_FILE=/path/to/panopto_cookies.txt` in the server's `.env`. yt-dlp will use the file instead of the browser. Re-export when the session expires.
 - **Safari: `permission denied`** — give Terminal/your IDE Full Disk Access (see above).
 - **No audio in output** — yt-dlp downloaded an audio-less HLS variant. Already mitigated by `format: bestvideo*+bestaudio/best`; if you still hit it, run `yt-dlp -F <url>` to inspect available formats.
 

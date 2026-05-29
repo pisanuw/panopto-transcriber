@@ -50,13 +50,10 @@ def _ydl_opts(
     out_dir: Path,
     cookies_browser: str,
     cookies_profile: str | None,
+    cookies_file: Path | None = None,
 ) -> dict:
-    cookies_tuple: tuple = (cookies_browser,)
-    if cookies_profile:
-        cookies_tuple = (cookies_browser, cookies_profile)
-    return {
+    opts: dict = {
         "outtmpl": str(out_dir / "%(title)s [%(id)s].%(ext)s"),
-        "cookiesfrombrowser": cookies_tuple,
         "format": "bestvideo*+bestaudio/best",
         "merge_output_format": "mp4",
         "quiet": False,
@@ -66,13 +63,32 @@ def _ydl_opts(
         "ignoreerrors": False,
         "download_archive": str(out_dir / ARCHIVE_FILENAME),
     }
+    if cookies_file:
+        opts["cookiefile"] = str(cookies_file)
+    else:
+        cookies_tuple: tuple = (cookies_browser,)
+        if cookies_profile:
+            cookies_tuple = (cookies_browser, cookies_profile)
+        opts["cookiesfrombrowser"] = cookies_tuple
+    return opts
 
 
-def _expired_session_error(host: str, browser: str, underlying: str) -> RuntimeError:
+def _expired_session_error(
+    host: str, browser: str, cookies_file: Path | None, underlying: str
+) -> RuntimeError:
+    if cookies_file:
+        hint = (
+            f"the cookies in {cookies_file} have expired. "
+            f"Re-export them on a machine signed in to https://{host} (uv run panopto-transcriber dump-tokens), "
+            f"then copy the file back to {cookies_file}."
+        )
+    else:
+        hint = (
+            f"your browser session may have expired. "
+            f"Open https://{host} in {browser}, sign in, then retry."
+        )
     return RuntimeError(
-        "Panopto download failed — your browser session may have expired. "
-        f"Open https://{host} in {browser}, sign in, then retry.\n"
-        f"Underlying error: {underlying}"
+        f"Panopto download failed — {hint}\nUnderlying error: {underlying}"
     )
 
 
@@ -93,18 +109,21 @@ def download_session(
     panopto_host: str,
     cookies_browser: str = "chrome",
     cookies_profile: str | None = None,
+    cookies_file: Path | None = None,
 ) -> Path:
     """Download a single Panopto session and return the saved file path."""
     url = _viewer_url(panopto_host, session_or_url)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    with YoutubeDL(_ydl_opts(out_dir, cookies_browser, cookies_profile)) as ydl:
+    with YoutubeDL(_ydl_opts(out_dir, cookies_browser, cookies_profile, cookies_file)) as ydl:
         try:
             info = ydl.extract_info(url, download=True)
         except DownloadError as e:
             msg = str(e)
             if "cookies" in msg.lower() or "login" in msg.lower() or "403" in msg:
-                raise _expired_session_error(panopto_host, cookies_browser, msg) from e
+                raise _expired_session_error(
+                    panopto_host, cookies_browser, cookies_file, msg
+                ) from e
             raise
 
     path = _extract_filepath(info or {})
@@ -118,11 +137,12 @@ def _enumerate_folder(
     out_dir: Path,
     cookies_browser: str,
     cookies_profile: str | None,
+    cookies_file: Path | None,
     panopto_host: str,
 ) -> list[dict]:
     """List sessions in a Panopto folder without downloading anything."""
     enum_opts = dict(
-        _ydl_opts(out_dir, cookies_browser, cookies_profile),
+        _ydl_opts(out_dir, cookies_browser, cookies_profile, cookies_file),
         extract_flat="in_playlist",
         quiet=True,
         noprogress=True,
@@ -133,7 +153,9 @@ def _enumerate_folder(
         except DownloadError as e:
             msg = str(e)
             if "cookies" in msg.lower() or "login" in msg.lower() or "403" in msg:
-                raise _expired_session_error(panopto_host, cookies_browser, msg) from e
+                raise _expired_session_error(
+                    panopto_host, cookies_browser, cookies_file, msg
+                ) from e
             raise
     return (info or {}).get("entries") or []
 
@@ -145,6 +167,7 @@ def download_folder(
     panopto_host: str,
     cookies_browser: str = "chrome",
     cookies_profile: str | None = None,
+    cookies_file: Path | None = None,
 ) -> list[Path]:
     """Download every session in a Panopto folder.
 
@@ -157,7 +180,7 @@ def download_folder(
 
     print(f"Listing folder {folder_url} ...")
     entries = _enumerate_folder(
-        folder_url, out_dir, cookies_browser, cookies_profile, panopto_host
+        folder_url, out_dir, cookies_browser, cookies_profile, cookies_file, panopto_host
     )
     if not entries:
         print("Folder is empty or could not be enumerated.")
@@ -166,7 +189,7 @@ def download_folder(
     n = len(entries)
     print(f"Folder contains {n} session(s). Starting downloads.")
 
-    opts = _ydl_opts(out_dir, cookies_browser, cookies_profile)
+    opts = _ydl_opts(out_dir, cookies_browser, cookies_profile, cookies_file)
     opts["ignoreerrors"] = True
 
     paths: list[Path] = []
@@ -186,7 +209,9 @@ def download_folder(
         except DownloadError as e:
             msg = str(e)
             if "cookies" in msg.lower() or "login" in msg.lower() or "403" in msg:
-                raise _expired_session_error(panopto_host, cookies_browser, msg) from e
+                raise _expired_session_error(
+                    panopto_host, cookies_browser, cookies_file, msg
+                ) from e
             failures += 1
             print(f"{prefix} FAILED in {fmt_duration(time.monotonic() - file_start)}: {msg}")
             continue
