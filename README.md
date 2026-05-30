@@ -8,13 +8,26 @@ UW-IT does not hand out Panopto OAuth API credentials, so we use a workaround: *
 
 On machines without a browser (headless servers, CI), set `COOKIES_FILE` to a Netscape-format cookies file exported from a desktop run — see [Headless servers](#headless-servers-no-browser) below.
 
-The Canvas REST API does work with a personal access token (`CANVAS_TOKEN` in `.env`), so course discovery (next milestone) will use that.
+The Canvas REST API works with a personal access token (`CANVAS_TOKEN` in `.env`), so course enumeration and Panopto-folder discovery use that.
 
 ## What it does
 
 1. yt-dlp downloads the MP4 (or HLS-muxed MP4) using your browser cookies (or a cookies file)
 2. Whisper transcribes it locally — `whisper.cpp` (default, faster) or `openai-whisper` (Python)
 3. Works for single sessions, whole course folders, or a streaming download → transcribe → delete loop for disk-constrained machines
+4. Auto-discovers Panopto folders for every Canvas course you're in (via Playwright), and the multi-course pipeline coordinates across up to ~10 machines via shared-FS lockfiles
+
+### Recommended workflow
+
+Most users want all their Canvas courses transcribed end-to-end:
+
+```bash
+uv run panopto-transcriber list-courses --out courses.yml          # one-time per quarter
+uv run panopto-transcriber discover-folders courses.yml --skip-archived  # fills in folder GUIDs
+uv run panopto-transcriber run-courses courses.yml                 # download → transcribe → delete each
+```
+
+Steps 1 and 2 take seconds-to-minutes; step 3 is the long-running pipeline. See [List your Canvas courses](#list-your-canvas-courses) for details on each.
 
 ## Install
 
@@ -124,7 +137,48 @@ courses:
     panopto_folder: ""  # TODO  ← paste the folder GUID or URL here
 ```
 
-The mapping is a manual step today: open each course's "Panopto Course Videos" tab, copy the folder URL/GUID, paste it in. Optional per-entry `out_dir: "..."` overrides the transcript subdir (default: `<code>_<term>` slugified, e.g., `css_143_d_winter_2026`).
+The mapping is the bottleneck. Two ways to fill it in:
+
+**Auto-discover (recommended)** — drive Chromium through Canvas's LTI launch for each course and read the Panopto folder GUID off the resulting page. Courses without a Panopto tab are silently skipped:
+
+```bash
+uv sync --extra discover                     # one-time: pulls Playwright
+uv run playwright install chromium           # one-time: pulls the browser binary
+uv run panopto-transcriber discover-folders courses.yml
+# Helpful flags:
+#   --skip-archived  → ignore "ARCHIVED: …" courses
+#   --headed         → show the browser (debug or first-time MFA)
+```
+
+The script edits `courses.yml` in place; comments and key order are preserved. Re-running is safe: entries that already have `panopto_folder` set are left alone.
+
+**Manual** — open each course's "Panopto Course Videos" tab, copy the folder URL/GUID, paste it into `panopto_folder:` yourself.
+
+#### Sanity check: how many videos per course?
+
+Before kicking off a long batch, see how many sessions each course folder actually has — active vs. archived:
+
+```bash
+uv run panopto-transcriber inventory courses.yml                  # default: only courses with panopto_folder set
+uv run panopto-transcriber inventory courses.yml --skip-archived  # ignore "ARCHIVED:" courses
+uv run panopto-transcriber inventory courses.yml --all            # include entries without a folder, as "-"
+```
+
+Output looks like:
+
+```
+CODE                   TERM            ACTIVE ARCHIVED  NAME
+----------------------------------------------------------------------
+CSS 343 D              Winter 2026         15        0  CSS 343 D Wi 26: Data Structures…
+CSS 430 A              Winter 2026         12        2  CSS 430 A Wi 26: Operating Systems
+ARCHIVED: CSS 422 B    Autumn 2024         17        0  ARCHIVED: CSS 422 B Au 24: …
+----------------------------------------------------------------------
+TOTAL                                      44        2  (46 sessions across 3 folder(s))
+```
+
+Counts come from Panopto's `Services/Data.svc/GetSessions` endpoint using your existing browser cookies — same as the web UI, so they always match what you'd see by clicking around.
+
+Optional per-entry `out_dir: "..."` overrides the transcript subdir (default: `<code>_<term>` slugified, e.g., `css_143_d_winter_2026`).
 
 Then process every course that has a `panopto_folder` set:
 
@@ -135,6 +189,19 @@ uv run panopto-transcriber run-courses courses.yml --keep-media
 ```
 
 This loops the streaming download → transcribe → delete pipeline over each course, writing transcripts to `<TRANSCRIPT_DIR>/<subdir>/`. Per-course failures (typo'd GUID, no access) are logged and the batch continues to the next course; cookie/auth expiry aborts the whole batch so you don't burn through every course with bad credentials.
+
+While running, you'll see a banner per course, a per-session progress line from `run_folder_streaming` (`[3/15] done in 3m21s. ETA: 42m08s …`), a per-course footer with the rolling batch ETA, and a final BATCH DONE summary:
+
+```
+======================================================================
+COURSE [3/11]  CSS 343 A
+  term:        Autumn 2025
+  panopto:     1f45b165-7819-…-b6b8-b2c601266e47
+  transcripts: /Users/.../transcripts/css_343_a_autumn_2025
+  progress:    2 processed by me, 0 taken by peers, 0 other
+  batch ETA:   ~32m12s (finish ~14:47); avg 16m06s/course over 2 so far
+======================================================================
+```
 
 #### Running on multiple machines in parallel
 
@@ -203,6 +270,8 @@ Reruns are idempotent: yt-dlp tracks completed downloads in `<DOWNLOAD_DIR>/.yt-
 
 - **`Panopto download failed — your browser session may have expired`** — open Panopto in your browser, sign in, retry.
 - **`could not find chrome cookies database`** — either your Chrome profile path is non-default (set `COOKIES_PROFILE` to the profile folder name, e.g., `Profile 1`), or you're on a machine with no browser at all (see [Headless servers](#headless-servers-no-browser)).
+- **`This video is only available for registered users`** — `COOKIES_PROFILE` points at a Chrome profile that isn't signed in to Panopto. yt-dlp's Panopto extractor doesn't follow SSO redirects, so 0 `*.panopto.com` cookies in the chosen profile means the download fails even though the video plays in your browser. Open `https://uw.hosted.panopto.com` in the configured profile, sign in, retry — or change `COOKIES_PROFILE` to whichever profile actually has Panopto cookies (often just blank/`Default`).
+- **`discover-folders` fails / hangs on every course** — most commonly the cookies extracted from Chrome don't carry over to Playwright cleanly (SameSite issues, MFA prompt). Re-run with `--headed` once; complete any SSO/MFA in the visible window; the session cookies set during that run carry through the rest of the loop. If a specific course consistently fails ("no folderID in launched page"), open its Panopto tab manually in Canvas and paste the GUID into `courses.yml` by hand.
 - **`std::filesystem::__cxx11::directory_iterator` linker error when building whisper.cpp** — your system GCC is older than 9.x and `libstdc++fs` isn't linked. Either build with a newer GCC (`module load gcc/11`) or pass `cmake -B build -DCMAKE_EXE_LINKER_FLAGS="-lstdc++fs" -DCMAKE_SHARED_LINKER_FLAGS="-lstdc++fs"`. Alternatively skip whisper.cpp and use `TRANSCRIBER_BACKEND=openai-whisper`.
 - **Safari: `permission denied`** — give Terminal/your IDE Full Disk Access (see above).
 - **No audio in output** — yt-dlp downloaded an audio-less HLS variant. Already mitigated by `format: bestvideo*+bestaudio/best`; if you still hit it, run `yt-dlp -F <url>` to inspect available formats.
@@ -218,6 +287,8 @@ src/panopto_transcriber/
 ├── tokens.py               # dump Canvas token + Panopto cookies to .tokens/
 ├── canvas.py               # minimal Canvas REST client (list courses for now)
 ├── claim.py                # cross-machine course-level lockfile coordination
+├── discover.py             # auto-fill panopto_folder via Playwright (LTI launch)
+├── inventory.py            # count active/archived sessions per folder (Panopto Data.svc)
 └── transcribers/
     ├── base.py             # Transcriber protocol
     ├── whisper_cpp.py      # subprocess to whisper-cli
@@ -231,5 +302,5 @@ src/panopto_transcriber/
 - [x] Canvas client: list courses + emit a starter `courses.yml`
 - [x] `panopto-transcriber run-courses courses.yml` — loop `run-folder --delete-after` over every entry
 - [x] Multi-machine parallel execution via shared-FS lockfiles (up to ~10 workers)
-- [ ] Auto-discover Panopto folder GUID per Canvas course (so `courses.yml` doesn't need manual entry)
+- [x] Auto-discover Panopto folder GUID per Canvas course (`discover-folders` via Playwright LTI launch)
 - [ ] Optional: download Panopto auto-captions as a "free" transcription source
