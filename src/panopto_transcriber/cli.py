@@ -476,6 +476,254 @@ def _yaml_str(s: str | None) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+@main.command("inventory")
+@click.argument(
+    "courses_yaml",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.option(
+    "--all",
+    "show_all",
+    is_flag=True,
+    default=False,
+    help="Also list courses without a panopto_folder set (printed as '-').",
+)
+@click.option(
+    "--skip-archived",
+    is_flag=True,
+    default=False,
+    help="Skip courses whose name starts with 'ARCHIVED:'.",
+)
+def inventory_cmd(courses_yaml: Path, show_all: bool, skip_archived: bool) -> None:
+    """Print active/archived Panopto session counts per course in COURSES_YAML.
+
+    Hits Panopto's `Services/Data.svc/GetSessions` endpoint twice per folder
+    (once with `includeArchived=false`, once with `=true`) using the cookies
+    yt-dlp would use for downloads. Counts come from the same source the web
+    UI uses, so they match what you see when you open the folder in a browser.
+    """
+    from .inventory import count_folder_sessions, load_panopto_cookies
+
+    cfg = Config.load()
+    entries = load_courses_yaml(courses_yaml)
+    if skip_archived:
+        entries = [
+            e for e in entries
+            if not (e.name or "").upper().startswith("ARCHIVED")
+        ]
+
+    todo = entries if show_all else [e for e in entries if e.panopto_folder]
+    if not todo:
+        click.echo(
+            "No courses to inventory. (Use --all to also list courses without "
+            "a panopto_folder set.)"
+        )
+        return
+
+    cookies = load_panopto_cookies(
+        cfg.cookies_browser, cfg.cookies_profile, cfg.cookies_file
+    )
+    if not cookies:
+        raise click.ClickException(
+            "No *.panopto.com cookies found. Sign in to Panopto in the "
+            f"configured browser/profile ({cfg.cookies_browser} "
+            f"{cfg.cookies_profile or 'Default'}), or set COOKIES_FILE on a "
+            "headless server."
+        )
+    click.echo(
+        f"Inventorying {len(todo)} course(s) using {len(cookies)} panopto.com cookies."
+    )
+
+    header = f"{'CODE':<22} {'TERM':<15} {'ACTIVE':>6} {'ARCHIVED':>8}  NAME"
+    click.echo(header)
+    click.echo("-" * 100)
+
+    total_active = 0
+    total_archived = 0
+    failures: list[tuple[str, str]] = []
+
+    for entry in todo:
+        code = (entry.code or "")[:22]
+        term = (entry.term or "")[:15]
+        name = (entry.name or "") if entry.name else ""
+
+        if not entry.panopto_folder:
+            click.echo(f"{code:<22} {term:<15} {'-':>6} {'-':>8}  {name}")
+            continue
+
+        try:
+            counts = count_folder_sessions(
+                cfg.panopto_host, entry.panopto_folder, cookies
+            )
+        except Exception as e:  # noqa: BLE001
+            failures.append((entry.code or entry.name or "?", str(e)))
+            click.echo(
+                f"{code:<22} {term:<15} {'ERR':>6} {'ERR':>8}  {name} — {e}",
+                err=True,
+            )
+            continue
+
+        total_active += counts.active
+        total_archived += counts.archived
+        click.echo(
+            f"{code:<22} {term:<15} {counts.active:>6} {counts.archived:>8}  {name}"
+        )
+
+    click.echo("-" * 100)
+    click.echo(
+        f"{'TOTAL':<22} {'':<15} {total_active:>6} {total_archived:>8}  "
+        f"({total_active + total_archived} sessions across {len(todo) - len(failures)} folder(s))"
+    )
+    if failures:
+        click.echo(f"\n{len(failures)} folder(s) failed:")
+        for label, err in failures[:10]:
+            click.echo(f"  - {label}: {err}")
+        if len(failures) > 10:
+            click.echo(f"  ... and {len(failures) - 10} more")
+
+
+@main.command("discover-folders")
+@click.argument(
+    "courses_yaml",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.option(
+    "--skip-archived",
+    is_flag=True,
+    default=False,
+    help="Skip courses whose name starts with 'ARCHIVED:'.",
+)
+@click.option(
+    "--headed",
+    is_flag=True,
+    default=False,
+    help="Show the browser window. Useful for first-time SSO/MFA or debugging.",
+)
+def discover_folders_cmd(
+    courses_yaml: Path, skip_archived: bool, headed: bool
+) -> None:
+    """Auto-populate `panopto_folder` for courses missing it in COURSES_YAML.
+
+    For each entry with an empty `panopto_folder`, queries Canvas for the
+    course's Panopto LTI tab and drives a headless Chromium through the LTI
+    launch to read the resulting folder GUID. Courses with no Panopto tab
+    are skipped silently. The YAML is rewritten in place; comments and key
+    order are preserved.
+
+    Requires the `discover` extra:
+        uv sync --extra discover
+        uv run playwright install chromium
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as e:
+        raise click.ClickException(
+            "Playwright is not installed. Run:\n"
+            "  uv sync --extra discover\n"
+            "  uv run playwright install chromium"
+        ) from e
+
+    from .discover import (
+        chrome_cookies_for_playwright,
+        extract_folder_id_from_page,
+        find_panopto_tab_url,
+        update_yaml_in_place,
+    )
+
+    cfg = Config.load()
+    if not cfg.canvas_token:
+        raise click.ClickException("CANVAS_TOKEN is empty — set it in .env first.")
+
+    entries = load_courses_yaml(courses_yaml)
+    todo = [
+        e for e in entries
+        if not e.panopto_folder
+        and e.canvas_id
+        and not (skip_archived and (e.name or "").upper().startswith("ARCHIVED"))
+    ]
+
+    if not todo:
+        click.echo("Nothing to discover — all entries already have panopto_folder set.")
+        return
+
+    click.echo(
+        f"Discovering Panopto folders for {len(todo)} course(s) "
+        f"(of {len(entries)} total in {courses_yaml})."
+    )
+
+    cookies = chrome_cookies_for_playwright(cfg.cookies_profile or None)
+    click.echo(
+        f"Loaded {len(cookies)} cookies from {cfg.cookies_browser} "
+        f"({cfg.cookies_profile or 'Default'})."
+    )
+
+    updates: dict[int, str] = {}
+    no_panopto: list[str] = []
+    failed: list[tuple[str, str]] = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=not headed)
+        context = browser.new_context()
+        context.add_cookies(cookies)
+
+        try:
+            for i, entry in enumerate(todo, start=1):
+                label = entry.code or entry.name or f"canvas#{entry.canvas_id}"
+                prefix = f"[{i}/{len(todo)}]"
+
+                try:
+                    launch = find_panopto_tab_url(
+                        cfg.canvas_url, cfg.canvas_token, entry.canvas_id
+                    )
+                except httpx.HTTPStatusError as e:
+                    failed.append((label, f"tabs API {e.response.status_code}"))
+                    click.echo(f"{prefix} {label} — tabs API failed: {e}", err=True)
+                    continue
+
+                if launch is None:
+                    no_panopto.append(label)
+                    click.echo(f"{prefix} {label} — no Panopto tab, skipping")
+                    continue
+
+                page = context.new_page()
+                try:
+                    page.goto(launch, wait_until="networkidle", timeout=60_000)
+                    folder_id = extract_folder_id_from_page(page)
+                    if folder_id:
+                        updates[entry.canvas_id] = folder_id
+                        click.echo(f"{prefix} {label} — {folder_id}")
+                    else:
+                        failed.append((label, "no folderID in launched page"))
+                        click.echo(
+                            f"{prefix} {label} — FAILED: no folderID found "
+                            f"(re-run with --headed to inspect)",
+                            err=True,
+                        )
+                except Exception as e:  # noqa: BLE001 — keep going on per-page errors
+                    failed.append((label, str(e)))
+                    click.echo(f"{prefix} {label} — FAILED: {e}", err=True)
+                finally:
+                    page.close()
+        finally:
+            browser.close()
+
+    if updates:
+        modified = update_yaml_in_place(courses_yaml, updates)
+        click.echo(f"\nWrote {modified} new GUID(s) to {courses_yaml}.")
+    else:
+        click.echo(f"\nNo updates to write.")
+
+    click.echo(
+        f"Summary: {len(updates)} discovered, "
+        f"{len(no_panopto)} no Panopto tab, {len(failed)} failed."
+    )
+    if failed:
+        for label, err in failed[:10]:
+            click.echo(f"  - {label}: {err}")
+        if len(failed) > 10:
+            click.echo(f"  ... and {len(failed) - 10} more")
+
+
 @main.command("list-courses")
 @click.option(
     "--state",

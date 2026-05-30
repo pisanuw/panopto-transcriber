@@ -16,6 +16,9 @@ dependencies = [
 # Pluggable transcriber backends. Install one or both.
 # `whisper-cpp` backend has no Python deps (uses the `whisper-cli` binary from `brew install whisper-cpp`).
 openai-whisper = ["openai-whisper>=20231117"]
+# Panopto-folder auto-discovery (drives a real browser through the LTI launch).
+# After installing this extra, also run: uv run playwright install chromium
+discover = ["playwright>=1.40"]
 
 [project.scripts]
 panopto-transcriber = "panopto_transcriber.cli:main"
