@@ -102,6 +102,18 @@ def _extract_filepath(entry: dict) -> Path | None:
     return Path(fn) if fn else None
 
 
+def _find_archived_session(out_dir: Path, session_or_url: str) -> Path | None:
+    """If yt-dlp's archive already lists this session, find the saved file by GUID."""
+    guid = session_or_url if _is_guid(session_or_url) else None
+    if guid is None:
+        m = re.search(r"id=([0-9a-fA-F-]{36})", session_or_url)
+        guid = m.group(1) if m else None
+    if guid is None:
+        return None
+    matches = list(out_dir.glob(f"*[[]{guid}].*"))
+    return matches[0] if matches else None
+
+
 def download_session(
     session_or_url: str,
     out_dir: Path,
@@ -111,7 +123,12 @@ def download_session(
     cookies_profile: str | None = None,
     cookies_file: Path | None = None,
 ) -> Path:
-    """Download a single Panopto session and return the saved file path."""
+    """Download a single Panopto session and return the saved file path.
+
+    If the session is already recorded in `<out_dir>/.yt-dlp-archive.txt`,
+    yt-dlp skips the download; we then locate the existing file by GUID and
+    return its path so the caller can still hand it to a transcriber.
+    """
     url = _viewer_url(panopto_host, session_or_url)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -127,9 +144,19 @@ def download_session(
             raise
 
     path = _extract_filepath(info or {})
-    if not path:
-        raise RuntimeError("yt-dlp finished but did not report an output file path.")
-    return path
+    if path:
+        return path
+
+    # yt-dlp reported nothing → almost always means "already in archive".
+    existing = _find_archived_session(out_dir, session_or_url)
+    if existing:
+        print(f"Already downloaded: {existing}")
+        return existing
+    raise RuntimeError(
+        "yt-dlp skipped download (already in archive) but no matching file "
+        f"was found in {out_dir}. Remove the GUID from "
+        f"{out_dir / ARCHIVE_FILENAME} to force a re-download."
+    )
 
 
 def _enumerate_folder(

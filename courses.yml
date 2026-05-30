@@ -92,7 +92,7 @@ courses:
     name: "ARCHIVED: CSS 422 B Au 24: Hardware And Computer Organization"
     code: "ARCHIVED: CSS 422 B"
     term: "Autumn 2024"
-    panopto_folder: ""  # TODO
+    panopto_folder: "153546f4-0c27-4203-9189-b178014e8985"  # TODO
   - canvas_id: 1769919
     name: "ARCHIVED: CSS 497 A Au 24: Computer Science And Software Engineering Capstone (Yusuf Pisan)"
     code: "ARCHIVED: CSS 497 A"
@@ -102,7 +102,7 @@ courses:
     name: "ARCHIVED: CSS 343 A Au 25: Data Structures, Algorithms, And Discrete Mathematics II"
     code: "ARCHIVED: CSS 343 A"
     term: "Autumn 2025"
-    panopto_folder: ""  # TODO
+    panopto_folder: "1f45b165-7819-42a5-b6b8-b2c601266e47"  # TODO
   - canvas_id: 1838594
     name: "ARCHIVED: CSS 343 B Au 25: Data Structures, Algorithms, And Discrete Mathematics II"
     code: "ARCHIVED: CSS 343 B"
@@ -307,7 +307,7 @@ courses:
     name: "ARCHIVED: CSS 343 B Sp 25: Data Structures, Algorithms, And Discrete Mathematics II"
     code: "ARCHIVED: CSS 343 B"
     term: "Spring 2025"
-    panopto_folder: ""  # TODO
+    panopto_folder: "5663da28-f147-407e-b9d8-b2c601266ec0"  # TODO
   - canvas_id: 1817334
     name: "ARCHIVED: CSS 343 C Sp 25: Data Structures, Algorithms, And Discrete Mathematics II"
     code: "ARCHIVED: CSS 343 C"
@@ -447,7 +447,7 @@ courses:
     name: "ARCHIVED: CSS 343 B Wi 25: Data Structures, Algorithms, And Discrete Mathematics II"
     code: "ARCHIVED: CSS 343 B"
     term: "Winter 2025"
-    panopto_folder: ""  # TODO
+    panopto_folder: "ec055ef7-90ac-4bd5-9c9e-b21a0171db3a"  # TODO
   - canvas_id: 1815097
     name: "ARCHIVED: CSS 397 A Wi 25: Computing Internship (Yusuf Pisan)"
     code: "ARCHIVED: CSS 397 A"
@@ -457,7 +457,7 @@ courses:
     name: "ARCHIVED: CSS 430 B Wi 25: Operating Systems"
     code: "ARCHIVED: CSS 430 B"
     term: "Winter 2025"
-    panopto_folder: ""  # TODO
+    panopto_folder: "8a9a7852-5194-456c-920c-b21a0171db8a"  # TODO
   - canvas_id: 1803038
     name: "ARCHIVED: CSS 497 A Wi 25: Computer Science And Software Engineering Capstone (Yusuf Pisan)"
     code: "ARCHIVED: CSS 497 A"

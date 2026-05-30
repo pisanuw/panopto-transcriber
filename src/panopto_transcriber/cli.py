@@ -43,10 +43,19 @@ def _dump_tokens(cfg: Config) -> None:
     if panopto_path:
         click.echo(f"Panopto cookies saved: {panopto_path}")
     else:
-        profile = cfg.cookies_profile or "default"
+        profile = cfg.cookies_profile or "Default"
+        # yt-dlp's Panopto extractor calls /Pages/Viewer/DeliveryInfo.aspx
+        # directly and needs a `.panopto.com` session cookie — it does NOT
+        # follow SSO redirects the way a browser does. So zero panopto.com
+        # cookies in the chosen profile = download will fail with "only
+        # available for registered users". Surface this clearly.
         click.echo(
-            f"No Panopto cookies found in {cfg.cookies_browser} ({profile}). "
-            "Sign in to Panopto in that browser/profile.",
+            f"WARNING: no *.panopto.com cookies in {cfg.cookies_browser} "
+            f"({profile}). yt-dlp can't follow SSO redirects, so this download "
+            "will almost certainly fail.\n"
+            f"  Fix: open {cfg.cookies_browser} ({profile}) → "
+            f"https://{cfg.panopto_host} → sign in → play any video, then retry.\n"
+            f"  Or: switch COOKIES_PROFILE in .env to a profile already signed in to Panopto.",
             err=True,
         )
 
