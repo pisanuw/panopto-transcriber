@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import re
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import click
 import httpx
+
+from ._progress import fmt_duration
 
 from .batch import run_folder_streaming, transcribe_directory
 from .canvas import CourseEntry, list_courses, load_courses_yaml
@@ -358,11 +362,13 @@ def run_courses_cmd(
     if not todo:
         click.echo("Nothing to do. Fill in `panopto_folder:` for at least one course.")
         return
+    click.echo(f"Plan: up to {len(todo)} course(s) (peers may claim some).")
 
     total_new = 0
     course_failures: list[tuple[str, str]] = []
     claimed_count = 0
     held_by_peers = 0
+    batch_start = time.monotonic()
 
     for i, entry in enumerate(todo, start=1):
         label = entry.code or entry.name or f"canvas#{entry.canvas_id}"
@@ -371,22 +377,40 @@ def run_courses_cmd(
             transcript_dir = _resolve_subdir(cfg.transcript_dir, subdir)
         except click.BadParameter as e:
             course_failures.append((label, f"bad out_dir {subdir!r}: {e.message}"))
-            click.echo(f"\n=== [{i}/{len(todo)}] {label} — SKIPPED: {e.message}", err=True)
+            click.echo(f"\n[{i}/{len(todo)}] {label} — SKIPPED: {e.message}", err=True)
             continue
 
         claim = try_claim(transcript_dir, stale_after=stale_after)
         if claim is None:
             held_by_peers += 1
-            click.echo(
-                f"\n=== [{i}/{len(todo)}] {label} — held by another worker, skipping"
-            )
+            click.echo(f"\n[{i}/{len(todo)}] {label} — held by another worker, skipping")
             continue
 
         claimed_count += 1
+        bar = "=" * 70
+        click.echo("")
+        click.echo(bar)
+        click.echo(f"COURSE [{i}/{len(todo)}]  {label}")
+        click.echo(f"  term:        {entry.term or '-'}")
+        click.echo(f"  panopto:     {entry.panopto_folder}")
+        click.echo(f"  transcripts: {transcript_dir}")
         click.echo(
-            f"\n=== [{i}/{len(todo)}] {label} → "
-            f"{transcript_dir.relative_to(cfg.transcript_dir.parent)} (claimed) ==="
+            f"  progress:    {claimed_count} processed by me, "
+            f"{held_by_peers} taken by peers, {i - claimed_count - held_by_peers} other"
         )
+        if claimed_count > 1:
+            elapsed_now = time.monotonic() - batch_start
+            avg_per = elapsed_now / (claimed_count - 1)  # exclude the one just starting
+            remaining = len(todo) - i + 1
+            eta = remaining * avg_per
+            eta_at = (datetime.now() + timedelta(seconds=eta)).strftime("%H:%M")
+            click.echo(
+                f"  batch ETA:   ~{fmt_duration(eta)} (finish ~{eta_at}); "
+                f"avg {fmt_duration(avg_per)}/course over {claimed_count - 1} so far"
+            )
+        click.echo(bar)
+
+        course_start = time.monotonic()
         try:
             with Heartbeat(claim, interval=heartbeat):
                 results = run_folder_streaming(
@@ -401,6 +425,18 @@ def run_courses_cmd(
                     delete_media=not keep_media,
                 )
             total_new += len(results)
+            course_elapsed = time.monotonic() - course_start
+            batch_elapsed = time.monotonic() - batch_start
+            avg_per_course = batch_elapsed / claimed_count
+            remaining = len(todo) - i
+            eta = remaining * avg_per_course
+            click.echo(
+                f"\n[{i}/{len(todo)}] {label} done in {fmt_duration(course_elapsed)} "
+                f"({len(results)} new transcript(s)). "
+                f"Total: {total_new} transcript(s), "
+                f"{fmt_duration(batch_elapsed)} elapsed, "
+                f"~{fmt_duration(eta)} remaining."
+            )
         except RuntimeError as e:
             # Auth/cookie expiry is unrecoverable across courses — abort the batch.
             msg = str(e)
@@ -417,10 +453,13 @@ def run_courses_cmd(
         finally:
             release(claim)
 
+    batch_total = time.monotonic() - batch_start
     click.echo("")
+    click.echo("=" * 70)
     click.echo(
-        f"Done. {total_new} new transcript(s) across {claimed_count} course(s) "
-        f"this worker processed; {held_by_peers} held by peers."
+        f"BATCH DONE in {fmt_duration(batch_total)}. "
+        f"{total_new} new transcript(s) across {claimed_count} course(s) "
+        f"processed by this worker; {held_by_peers} held by peers."
         + (f" {len(course_failures)} failed:" if course_failures else "")
     )
     for label, err in course_failures:
