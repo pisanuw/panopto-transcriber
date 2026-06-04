@@ -476,6 +476,430 @@ def _yaml_str(s: str | None) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+@main.command("match-orphans-to-calendar")
+@click.argument(
+    "orphans_dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+)
+@click.argument(
+    "calendar_ics",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.argument(
+    "courses_yaml",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.option(
+    "--target-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Where matched transcripts go (defaults to TRANSCRIPT_DIR from .env).",
+)
+@click.option(
+    "--time-window-minutes",
+    type=int,
+    default=120,
+    show_default=True,
+    help="A transcript timestamp matches a class event within ± this many minutes.",
+)
+@click.option(
+    "--apply",
+    is_flag=True,
+    default=False,
+    help="Actually move files. Without this, runs as a dry-run report.",
+)
+@click.option(
+    "--print-unmatched",
+    is_flag=True,
+    default=False,
+    help="At the end, print every unmatched session with nearby calendar events "
+    "and YAML candidates so you can resolve them by hand.",
+)
+def match_orphans_cmd(
+    orphans_dir: Path,
+    calendar_ics: Path,
+    courses_yaml: Path,
+    target_dir: Path | None,
+    time_window_minutes: int,
+    apply: bool,
+    print_unmatched: bool,
+) -> None:
+    """Re-file orphan transcripts into the correct course subdir using a
+    Google Calendar export.
+
+    For each transcript in ORPHANS_DIR (recursively), parses the recording
+    timestamp from the filename, looks up class events on that date in
+    CALENDAR_ICS, and matches them to courses in COURSES_YAML.
+    """
+    from datetime import timedelta
+    from .match_calendar import (
+        build_course_index, date_to_term_label, expand_class_events,
+        parse_filename_datetime, pick_course,
+    )
+
+    cfg = Config.load()
+    dest_root = (target_dir or cfg.transcript_dir).expanduser().resolve()
+    dest_root.mkdir(parents=True, exist_ok=True)
+    orphans_dir = orphans_dir.resolve()
+
+    # Collect orphan files (recurse one level under <orphans_dir>/<subdir>/<file>)
+    files: list[Path] = []
+    for p in orphans_dir.rglob("*"):
+        if p.is_file() and p.suffix.lower() in {".txt", ".srt"}:
+            files.append(p)
+    click.echo(f"Scanning {len(files)} orphan file(s) in {orphans_dir}.")
+
+    # Need calendar spanning earliest..latest transcript date
+    timestamps: dict[Path, "datetime"] = {}
+    for f in files:
+        dt = parse_filename_datetime(f.name)
+        if dt is not None:
+            timestamps[f] = dt
+    if not timestamps:
+        click.echo("No transcripts have a parseable yt-dlp date in their filename.")
+        return
+    min_d = min(dt.date() for dt in timestamps.values())
+    max_d = max(dt.date() for dt in timestamps.values()) + timedelta(days=1)
+    click.echo(f"Expanding calendar events between {min_d} and {max_d}...")
+    events = expand_class_events(calendar_ics, min_d, max_d)
+    click.echo(f"  {len(events)} class-like event(s) found.")
+
+    # Bucket by date for fast lookup
+    events_by_date: dict[date, list] = {}
+    for ev in events:
+        events_by_date.setdefault(ev.start.date(), []).append(ev)
+
+    yaml_entries = load_courses_yaml(courses_yaml)
+    by_key, by_num_term = build_course_index(yaml_entries)
+
+    # For each transcript GUID, pick one decision (use the .txt's outcome for the pair)
+    # but apply the move to both .txt and .srt with the same GUID.
+    by_guid: dict[str, list[Path]] = {}
+    for f in files:
+        m = re.search(r"\[([0-9a-fA-F-]{36})\]", f.name)
+        if m:
+            by_guid.setdefault(m.group(1).lower(), []).append(f)
+        else:
+            by_guid.setdefault(f"_no_guid_{f.name}", []).append(f)
+
+    moved = 0
+    no_event = 0
+    no_match = 0
+    ambiguous = 0
+    no_section_in_yaml = 0
+    reasons: dict[str, int] = {}
+    # For --print-unmatched: collect per-orphan details
+    unmatched: list[dict] = []
+
+    for guid, paths in by_guid.items():
+        # Use the first parseable timestamp for this group (all should be equal).
+        dt = None
+        for p in paths:
+            if p in timestamps:
+                dt = timestamps[p]
+                break
+        if dt is None:
+            no_event += 1
+            unmatched.append({
+                "paths": paths, "dt": None, "reason": "no-parseable-date",
+                "nearby": [], "term": None,
+            })
+            continue
+
+        day_events = events_by_date.get(dt.date(), [])
+        window = timedelta(minutes=time_window_minutes)
+        nearby = [
+            ev for ev in day_events
+            if abs((ev.start - dt).total_seconds()) <= window.total_seconds()
+        ]
+        term = date_to_term_label(dt.date())
+        if not nearby:
+            no_event += 1
+            unmatched.append({
+                "paths": paths, "dt": dt, "reason": "no-nearby-event",
+                "nearby": [], "term": term,
+            })
+            continue
+        # Closest event wins
+        nearby.sort(key=lambda ev: abs((ev.start - dt).total_seconds()))
+        course = None
+        reason = ""
+        for ev in nearby:
+            course, reason = pick_course(ev, term, by_key, by_num_term)
+            if course:
+                break
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+        if course is None:
+            if reason == "ambiguous":
+                ambiguous += 1
+            elif reason == "section-not-in-yaml":
+                no_section_in_yaml += 1
+            else:
+                no_match += 1
+            unmatched.append({
+                "paths": paths, "dt": dt, "reason": reason,
+                "nearby": nearby, "term": term,
+                "closest_event": nearby[0],
+            })
+            continue
+
+        subdir = course.out_dir or _default_course_subdir(course)
+        target = dest_root / subdir
+        if apply:
+            target.mkdir(parents=True, exist_ok=True)
+            # Same session may appear in several orphan subdirs (cross-listed
+            # course folders + multiple historical runs); keep one .txt and
+            # one .srt, delete the rest.
+            kept_by_ext: dict[str, Path] = {}
+            for p in paths:
+                ext = p.suffix.lower()
+                if ext not in kept_by_ext:
+                    kept_by_ext[ext] = p
+            for p in paths:
+                ext = p.suffix.lower()
+                if p is kept_by_ext.get(ext):
+                    dest = target / p.name
+                    if dest.exists() and dest != p:
+                        # Target already has this filename (probably a prior run
+                        # of match). Don't overwrite; just drop the orphan.
+                        p.unlink()
+                    else:
+                        p.rename(dest)
+                else:
+                    p.unlink()
+        moved += 1
+        if moved <= 10 or moved % 100 == 0:
+            sample = nearby[0]
+            click.echo(
+                f"  [{moved:>4}] {dt.date()} {dt.strftime('%H:%M')} → "
+                f"{course.code} ({term}) via '{sample.summary}' [{reason}]"
+            )
+
+    action = "moved" if apply else "would move"
+    click.echo("")
+    click.echo("=" * 70)
+    click.echo(
+        f"{action.capitalize()} {moved} session(s). "
+        f"{no_event} had no nearby class event; "
+        f"{ambiguous} ambiguous (multiple sections that term); "
+        f"{no_section_in_yaml} matched a section we don't have in YAML; "
+        f"{no_match} unmatched."
+    )
+    click.echo(f"Reason breakdown: {dict(sorted(reasons.items()))}")
+
+    if print_unmatched and unmatched:
+        click.echo("")
+        click.echo("=" * 70)
+        click.echo(f"UNMATCHED DETAIL ({len(unmatched)} session(s)):")
+        # Group by reason for easier triage
+        unmatched.sort(key=lambda u: (
+            u["reason"],
+            u["dt"].timestamp() if u["dt"] else 0,
+        ))
+        current_reason = ""
+        for u in unmatched:
+            if u["reason"] != current_reason:
+                current_reason = u["reason"]
+                click.echo("")
+                click.echo(f"--- reason: {current_reason} ---")
+            # Pick the most informative filename (.txt over .srt) for display
+            sample = next(
+                (p for p in u["paths"] if p.suffix.lower() == ".txt"),
+                u["paths"][0],
+            )
+            dt_str = u["dt"].strftime("%Y-%m-%d %a %H:%M") if u["dt"] else "(no date)"
+            click.echo(f"\n  {sample.name}")
+            click.echo(f"    recorded: {dt_str}  ({u['term'] or '-'})")
+            click.echo(f"    copies in orphans dir: {len(u['paths'])}")
+
+            if u["reason"] == "ambiguous":
+                ev = u["closest_event"]
+                opts = by_num_term.get((ev.code_number, u["term"]), [])
+                click.echo(
+                    f"    calendar event: '{ev.summary}' at {ev.start.strftime('%H:%M')} "
+                    f"(no section letter); YAML has {len(opts)} sections that term:"
+                )
+                for c in opts:
+                    click.echo(f"      - {c.code}  (canvas_id={c.canvas_id})")
+            elif u["reason"] == "section-not-in-yaml":
+                ev = u["closest_event"]
+                opts = by_num_term.get((ev.code_number, u["term"]), [])
+                click.echo(
+                    f"    calendar event: '{ev.summary}' at {ev.start.strftime('%H:%M')} "
+                    f"says section {ev.section}; YAML has these sections for "
+                    f"CSS {ev.code_number} {u['term']}:"
+                )
+                for c in opts:
+                    click.echo(f"      - {c.code}  (canvas_id={c.canvas_id})")
+                if not opts:
+                    click.echo("      (none)")
+            elif u["reason"] == "no-nearby-event":
+                click.echo(
+                    "    no class-like event within "
+                    f"±{time_window_minutes} min in calendar"
+                )
+            elif u["reason"] == "no-parseable-date":
+                click.echo("    filename has no yt-dlp date stamp")
+            elif u["reason"] == "no-course":
+                ev = u["closest_event"]
+                click.echo(
+                    f"    nearby event '{ev.summary}' parsed code={ev.code_number} "
+                    f"but no entry for that code in YAML for {u['term']}"
+                )
+
+
+@main.command("verify-transcripts")
+@click.argument(
+    "courses_yaml",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.option(
+    "--transcript-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Root transcript directory to check (defaults to TRANSCRIPT_DIR from .env).",
+)
+@click.option(
+    "--move-orphans-to",
+    "move_to",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Move orphan transcript files under this quarantine directory, preserving "
+    "the per-course subdir structure. Safer than deletion.",
+)
+@click.option(
+    "--delete-orphans",
+    is_flag=True,
+    default=False,
+    help="Permanently delete orphan transcripts. Mutually exclusive with --move-orphans-to.",
+)
+def verify_transcripts_cmd(
+    courses_yaml: Path,
+    transcript_dir: Path | None,
+    move_to: Path | None,
+    delete_orphans: bool,
+) -> None:
+    """Find transcripts whose session GUID isn't in the course's Panopto folder.
+
+    Detects orphan transcripts left behind by earlier runs where the Panopto
+    folder transiently contained sessions that have since been moved out.
+
+    Without --move-orphans-to or --delete-orphans, runs as a dry-run report.
+    """
+    from .verify import (
+        all_files_for_guid,
+        collect_transcripts,
+        list_folder_sessions,
+    )
+    from .inventory import load_panopto_cookies
+
+    if move_to and delete_orphans:
+        raise click.BadParameter(
+            "--move-orphans-to and --delete-orphans are mutually exclusive.",
+        )
+
+    cfg = Config.load()
+    root = (transcript_dir or cfg.transcript_dir).expanduser().resolve()
+    if not root.is_dir():
+        raise click.ClickException(f"Transcript root not found: {root}")
+
+    cookies = load_panopto_cookies(
+        cfg.cookies_browser, cfg.cookies_profile, cfg.cookies_file
+    )
+    if not cookies:
+        raise click.ClickException(
+            "No *.panopto.com cookies. Sign in to Panopto in the configured browser."
+        )
+
+    entries = load_courses_yaml(courses_yaml)
+    todo = [e for e in entries if e.panopto_folder]
+    click.echo(
+        f"Checking transcripts in {root} against {len(todo)} folder(s) "
+        f"in {courses_yaml}."
+    )
+
+    total_files = 0
+    total_orphans = 0
+    courses_with_orphans = 0
+    no_subdir_count = 0
+    failed: list[tuple[str, str]] = []
+
+    for i, entry in enumerate(todo, start=1):
+        label = entry.code or entry.name or f"canvas#{entry.canvas_id}"
+        subdir_name = entry.out_dir or _default_course_subdir(entry)
+        course_dir = root / subdir_name
+
+        if not course_dir.is_dir():
+            no_subdir_count += 1
+            continue
+
+        try:
+            folder = list_folder_sessions(cfg.panopto_host, entry.panopto_folder, cookies)
+        except Exception as e:  # noqa: BLE001
+            failed.append((label, str(e)))
+            click.echo(f"[{i}/{len(todo)}] {label} — ERROR fetching folder: {e}", err=True)
+            continue
+
+        transcripts, no_guid = collect_transcripts(course_dir)
+        total_files += len(transcripts)
+        in_folder = folder.all()
+        orphans = [t for t in transcripts if t.guid not in in_folder]
+
+        if not orphans and not no_guid:
+            click.echo(
+                f"[{i}/{len(todo)}] {label} — {len(transcripts)} transcripts, "
+                f"all match folder ({folder.active_count} active + "
+                f"{folder.archived_count} archived sessions)."
+            )
+            continue
+
+        courses_with_orphans += 1
+        total_orphans += len(orphans)
+        click.echo(
+            f"[{i}/{len(todo)}] {label}: {len(orphans)} ORPHAN transcript(s) of "
+            f"{len(transcripts)} (folder has {folder.active_count} active + "
+            f"{folder.archived_count} archived)"
+        )
+        for orph in orphans[:10]:
+            click.echo(f"    - {orph.path.name}")
+        if len(orphans) > 10:
+            click.echo(f"    ... and {len(orphans) - 10} more")
+        if no_guid:
+            click.echo(f"    {len(no_guid)} file(s) without a session GUID (left alone)")
+
+        # Mutate disk if asked
+        if move_to or delete_orphans:
+            for orph in orphans:
+                for f in all_files_for_guid(course_dir, orph.guid):
+                    if move_to:
+                        dest_dir = move_to.expanduser().resolve() / subdir_name
+                        dest_dir.mkdir(parents=True, exist_ok=True)
+                        f.rename(dest_dir / f.name)
+                    elif delete_orphans:
+                        f.unlink()
+
+    action = "moved" if move_to else "deleted" if delete_orphans else "found"
+    click.echo("")
+    click.echo("=" * 70)
+    click.echo(
+        f"Verified {total_files} transcript(s) across {len(todo) - no_subdir_count} "
+        f"course subdir(s). {action} {total_orphans} orphan(s) "
+        f"in {courses_with_orphans} course(s)."
+    )
+    if no_subdir_count:
+        click.echo(
+            f"{no_subdir_count} course(s) had no transcript subdir on disk "
+            "(never run or different out_dir)."
+        )
+    if failed:
+        click.echo(f"{len(failed)} folder lookup(s) failed:")
+        for label, err in failed[:5]:
+            click.echo(f"  - {label}: {err}")
+        if len(failed) > 5:
+            click.echo(f"  ... and {len(failed) - 5} more")
+
+
 @main.command("inventory")
 @click.argument(
     "courses_yaml",

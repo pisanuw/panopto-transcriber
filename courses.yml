@@ -287,7 +287,7 @@ courses:
     name: "CSS 342-343 Repository (2023-28)"
     code: "Reposistory for CSS 342-343"
     term: "Spring 2023"
-    panopto_folder: "0781c4a4-8c30-466c-88fd-b36201190417"  # TODO
+    panopto_folder: ""  # blanked: shared resource folder, not a teaching section
   - canvas_id: 1735699
     name: "ARCHIVED: CSS 385 A Sp 24: Introduction To Game Development"
     code: "ARCHIVED: CSS 385 A"
