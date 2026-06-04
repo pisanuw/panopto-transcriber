@@ -24,3 +24,6 @@ transcripts/
 .idea/
 .DS_Store
 models/whisper/ggml-base.en.bin
+private/Calendar/pisan@uw.appointment_schedule.ics
+private/Calendar/pisan@uw.ics
+private/Calendar/T4G.ics
