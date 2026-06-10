@@ -10,6 +10,10 @@ enumerates folder contents automatically.
 """
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 import re
 import time
 import uuid
@@ -150,7 +154,7 @@ def download_session(
     # yt-dlp reported nothing → almost always means "already in archive".
     existing = _find_archived_session(out_dir, session_or_url)
     if existing:
-        print(f"Already downloaded: {existing}")
+        logger.info(f"Already downloaded: {existing}")
         return existing
     raise RuntimeError(
         "yt-dlp skipped download (already in archive) but no matching file "
@@ -205,16 +209,16 @@ def download_folder(
     folder_url = _folder_url(panopto_host, folder_or_url)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Listing folder {folder_url} ...")
+    logger.info(f"Listing folder {folder_url} ...")
     entries = _enumerate_folder(
         folder_url, out_dir, cookies_browser, cookies_profile, cookies_file, panopto_host
     )
     if not entries:
-        print("Folder is empty or could not be enumerated.")
+        logger.error("Folder is empty or could not be enumerated.")
         return []
 
     n = len(entries)
-    print(f"Folder contains {n} session(s). Starting downloads.")
+    logger.info(f"Folder contains {n} session(s). Starting downloads.")
 
     opts = _ydl_opts(out_dir, cookies_browser, cookies_profile, cookies_file)
     opts["ignoreerrors"] = True
@@ -227,7 +231,7 @@ def download_folder(
         session_url = entry.get("url") or _viewer_url(panopto_host, entry.get("id", ""))
         title = entry.get("title") or entry.get("id") or session_url
         prefix = f"[{i}/{n}]"
-        print(f"{prefix} {title}")
+        logger.info(f"{prefix} {title}")
 
         file_start = time.monotonic()
         try:
@@ -240,7 +244,7 @@ def download_folder(
                     panopto_host, cookies_browser, cookies_file, msg
                 ) from e
             failures += 1
-            print(f"{prefix} FAILED in {fmt_duration(time.monotonic() - file_start)}: {msg}")
+            logger.error(f"{prefix} FAILED in {fmt_duration(time.monotonic() - file_start)}: {msg}")
             continue
 
         now = time.monotonic()
@@ -256,14 +260,14 @@ def download_folder(
         else:
             status = f"cached/skipped ({fmt_duration(file_elapsed)})"
 
-        print(
+        logger.info(
             f"{prefix} {status}. "
             f"Elapsed: {fmt_duration(total_elapsed)}. "
             f"ETA: {fmt_duration(eta)} (avg {fmt_duration(avg)}/session)"
         )
 
     total = time.monotonic() - batch_start
-    print(
+    logger.error(
         f"Downloaded {len(paths)} new file(s) in {fmt_duration(total)}"
         + (f"; {failures} failure(s)" if failures else "")
     )

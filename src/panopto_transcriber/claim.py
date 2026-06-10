@@ -15,6 +15,10 @@ create works without additional locking primitives.
 """
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 import os
 import socket
 import threading
@@ -47,7 +51,7 @@ def try_claim(course_dir: Path, *, stale_after: int = DEFAULT_STALE_SECONDS) -> 
                 holder = claim.read_text().strip()
             except OSError:
                 holder = "(unreadable)"
-            print(f"  Breaking stale claim on {course_dir.name} "
+            logger.info(f"  Breaking stale claim on {course_dir.name} "
                   f"(age={age:.0f}s, holder={holder})")
             try:
                 claim.unlink()

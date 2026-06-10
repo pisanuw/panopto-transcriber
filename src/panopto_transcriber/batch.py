@@ -3,6 +3,10 @@ skipping anything that already has a transcript in the output directory.
 """
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 import time
 from pathlib import Path
 
@@ -46,13 +50,13 @@ def transcribe_directory(
     """
     media = find_media(in_dir)
     if not media:
-        print(f"No media files found in {in_dir}")
+        logger.info(f"No media files found in {in_dir}")
         return []
 
     todo = [m for m in media if not already_transcribed(m, transcript_dir)]
     skipped = len(media) - len(todo)
     n = len(todo)
-    print(
+    logger.info(
         f"Found {len(media)} media file(s) in {in_dir}: "
         f"{n} to transcribe, {skipped} already done"
     )
@@ -65,13 +69,13 @@ def transcribe_directory(
 
     for i, media_path in enumerate(todo, start=1):
         prefix = f"[{i}/{n}]"
-        print(f"{prefix} {media_path.name} — transcribing...")
+        logger.info(f"{prefix} {media_path.name} — transcribing...")
         file_start = time.monotonic()
         try:
             result = transcriber.transcribe(media_path, transcript_dir)
         except Exception as e:  # noqa: BLE001 — surface and continue
             failures += 1
-            print(f"{prefix} FAILED in {fmt_duration(time.monotonic() - file_start)}: {e}")
+            logger.error(f"{prefix} FAILED in {fmt_duration(time.monotonic() - file_start)}: {e}")
             continue
         results.append(result)
 
@@ -80,14 +84,14 @@ def transcribe_directory(
         total_elapsed = now - batch_start
         avg = total_elapsed / i
         eta = (n - i) * avg
-        print(
+        logger.info(
             f"{prefix} done in {fmt_duration(file_elapsed)}. "
             f"Elapsed: {fmt_duration(total_elapsed)}. "
             f"ETA: {fmt_duration(eta)} (avg {fmt_duration(avg)}/file)"
         )
 
     total = time.monotonic() - batch_start
-    print(
+    logger.error(
         f"Transcribed {len(results)} file(s) in {fmt_duration(total)}"
         + (f"; {failures} failure(s)" if failures else "")
     )
@@ -118,17 +122,17 @@ def run_folder_streaming(
     out_dir.mkdir(parents=True, exist_ok=True)
     transcript_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Listing folder {folder_url} ...")
+    logger.info(f"Listing folder {folder_url} ...")
     entries = _enumerate_folder(
         folder_url, out_dir, cookies_browser, cookies_profile, cookies_file, panopto_host
     )
     if not entries:
-        print("Folder is empty or could not be enumerated.")
+        logger.error("Folder is empty or could not be enumerated.")
         return []
 
     n = len(entries)
     mode = "delete-after-transcribe" if delete_media else "keep-media"
-    print(f"Folder contains {n} session(s). Streaming mode ({mode}).")
+    logger.info(f"Folder contains {n} session(s). Streaming mode ({mode}).")
 
     opts = _ydl_opts(out_dir, cookies_browser, cookies_profile, cookies_file)
 
@@ -140,7 +144,7 @@ def run_folder_streaming(
         session_url = entry.get("url") or _viewer_url(panopto_host, entry.get("id", ""))
         title = entry.get("title") or entry.get("id") or session_url
         prefix = f"[{i}/{n}]"
-        print(f"{prefix} {title}")
+        logger.info(f"{prefix} {title}")
 
         session_start = time.monotonic()
 
@@ -156,44 +160,44 @@ def run_folder_streaming(
                     panopto_host, cookies_browser, cookies_file, msg
                 ) from e
             failures += 1
-            print(f"{prefix} download FAILED: {msg}")
+            logger.error(f"{prefix} download FAILED: {msg}")
             continue
 
         if not media_path or not media_path.exists():
-            print(f"{prefix} already in download archive; skipping")
+            logger.info(f"{prefix} already in download archive; skipping")
             continue
 
         if already_transcribed(media_path, transcript_dir):
-            print(f"{prefix} transcript already exists, skipping transcribe step")
+            logger.info(f"{prefix} transcript already exists, skipping transcribe step")
         else:
             try:
                 result = transcriber.transcribe(media_path, transcript_dir)
                 results.append(result)
             except Exception as e:  # noqa: BLE001 — keep going on per-session failures
                 failures += 1
-                print(f"{prefix} transcription FAILED: {e}")
+                logger.error(f"{prefix} transcription FAILED: {e}")
                 continue
 
         if delete_media:
             try:
                 media_path.unlink()
-                print(f"{prefix} deleted {media_path.name}")
+                logger.info(f"{prefix} deleted {media_path.name}")
             except OSError as e:
-                print(f"{prefix} could not delete {media_path}: {e}")
+                logger.error(f"{prefix} could not delete {media_path}: {e}")
 
         now = time.monotonic()
         elapsed = now - session_start
         total_elapsed = now - batch_start
         avg = total_elapsed / i
         eta = (n - i) * avg
-        print(
+        logger.info(
             f"{prefix} done in {fmt_duration(elapsed)}. "
             f"Elapsed: {fmt_duration(total_elapsed)}. "
             f"ETA: {fmt_duration(eta)} (avg {fmt_duration(avg)}/session)"
         )
 
     total = time.monotonic() - batch_start
-    print(
+    logger.error(
         f"Streamed {len(results)} session(s) in {fmt_duration(total)}"
         + (f"; {failures} failure(s)" if failures else "")
     )
