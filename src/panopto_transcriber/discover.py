@@ -16,6 +16,10 @@ the rest of the CLI keeps working without it.
 """
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 import re
 from pathlib import Path
 
@@ -112,7 +116,9 @@ def extract_folder_id_from_page(page) -> str | None:
             return m.group(1)
     try:
         html = page.content()
-    except Exception:
+    except Exception as exc:  # broad on purpose: Playwright is a lazy optional
+        # import, so its error types aren't importable at module scope.
+        logger.warning("could not read page content while locating folderID: %s", exc)
         return None
     m = PANOPTO_FOLDER_RE.search(html)
     return m.group(1) if m else None
