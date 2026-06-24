@@ -1,0 +1,21 @@
+# Example courses.yml — copy to `courses.yml` and fill in your own data.
+#
+# Generate a real one (populated with your Canvas courses) with:
+#   uv run panopto-transcriber list-courses --out courses.yml
+# then fill in `panopto_folder` (a GUID or full Sessions/List.aspx URL) for
+# each course you want to process — or let `discover-folders` fill them in.
+#
+# `courses.yml` itself is gitignored: it contains your institution's real
+# Canvas course IDs and Panopto folder GUIDs, which should not be committed.
+courses:
+  - canvas_id: 1234567
+    name: "CSS 343 A Sp 26: Data Structures, Algorithms, And Discrete Mathematics II"
+    code: "CSS 343 A"
+    term: "Spring 2026"
+    panopto_folder: "00000000-0000-0000-0000-000000000000"  # GUID or List.aspx URL
+  - canvas_id: 7654321
+    name: "CSS 430 A Sp 26: Operating Systems"
+    code: "CSS 430 A"
+    term: "Spring 2026"
+    panopto_folder: ""  # TODO: fill in, or leave blank to skip this course
+    # out_dir: "css430"  # optional: override the transcript subdir name

@@ -266,6 +266,48 @@ uv run panopto-transcriber run-folder "<folder-url-or-guid>" --delete-after --ou
 
 Reruns are idempotent: yt-dlp tracks completed downloads in `<DOWNLOAD_DIR>/.yt-dlp-archive.txt`, and transcription skips any media that already has a `.txt` in `TRANSCRIPT_DIR`. Safe to re-run after new lectures are posted. With `--delete-after`, the archive still records each session, so a re-run won't re-download anything that's already been transcribed.
 
+### Export auth tokens for a headless server
+
+`dump-tokens` writes the `.tokens/` helper files (see [Headless servers](#headless-servers-no-browser)) without downloading anything. Run it on a machine that is signed in to Panopto in its browser:
+
+```bash
+uv run panopto-transcriber dump-tokens
+# → writes .tokens/panopto_cookies.txt (Netscape), .tokens/panopto.txt, .tokens/canvas.txt
+```
+
+The `download`/`run`/`run-folder`/`run-courses` commands already do this automatically before each run, so you only need `dump-tokens` when preparing cookies to copy to a server.
+
+## Housekeeping
+
+Two commands help keep a large transcript tree tidy after many runs. Both are **dry-run by default** — they only report until you pass an explicit apply/move/delete flag.
+
+### Find stranded transcripts (`verify-transcripts`)
+
+Over time a Panopto folder can lose sessions it once held (course re-orgs, template cleanup). Their transcripts stay on disk as "orphans". `verify-transcripts` lists, per course in `courses.yml`, every transcript whose embedded session GUID is no longer in the folder:
+
+```bash
+uv run panopto-transcriber verify-transcripts courses.yml                       # dry-run report
+uv run panopto-transcriber verify-transcripts courses.yml --move-orphans-to quarantine/  # quarantine them
+uv run panopto-transcriber verify-transcripts courses.yml --delete-orphans      # permanently delete
+```
+
+`--move-orphans-to` (safer) and `--delete-orphans` are mutually exclusive.
+
+### Re-file misplaced transcripts by calendar (`match-orphans-to-calendar`)
+
+If transcripts ended up in the wrong (or no) course subdir, this re-files them using a Google Calendar `.ics` export: it parses the recording timestamp from each filename, finds the class event on that day, and maps it to a course in `courses.yml`.
+
+```bash
+# dry-run report (no files moved):
+uv run panopto-transcriber match-orphans-to-calendar orphans/ calendar.ics courses.yml
+# actually move the matched files:
+uv run panopto-transcriber match-orphans-to-calendar orphans/ calendar.ics courses.yml --apply
+# show every unmatched file with nearby events so you can resolve by hand:
+uv run panopto-transcriber match-orphans-to-calendar orphans/ calendar.ics courses.yml --print-unmatched
+```
+
+Useful flags: `--target-dir` (where matched files go; defaults to `TRANSCRIPT_DIR`) and `--time-window-minutes` (how close a recording must be to a calendar event to match; default 120). When the calendar event omits the section letter, a match only succeeds if exactly one section with that number ran that quarter; otherwise the file is left alone and reported as ambiguous.
+
 ## Troubleshooting
 
 - **`Panopto download failed — your browser session may have expired`** — open Panopto in your browser, sign in, retry.
@@ -280,7 +322,7 @@ Reruns are idempotent: yt-dlp tracks completed downloads in `<DOWNLOAD_DIR>/.yt-
 
 ```
 src/panopto_transcriber/
-├── cli.py                  # click-based entry point
+├── cli.py                  # click-based entry point (all subcommands)
 ├── config.py               # env loading
 ├── downloader.py           # yt-dlp wrapper: single session or whole folder
 ├── batch.py                # transcribe a directory; streaming download→transcribe→delete loop
@@ -289,6 +331,9 @@ src/panopto_transcriber/
 ├── claim.py                # cross-machine course-level lockfile coordination
 ├── discover.py             # auto-fill panopto_folder via Playwright (LTI launch)
 ├── inventory.py            # count active/archived sessions per folder (Panopto Data.svc)
+├── match_calendar.py       # match-orphans-to-calendar: re-file transcripts via an .ics export
+├── verify.py               # verify-transcripts: detect orphan transcripts not in the folder
+├── _progress.py            # human-readable duration/progress formatting
 └── transcribers/
     ├── base.py             # Transcriber protocol
     ├── whisper_cpp.py      # subprocess to whisper-cli
