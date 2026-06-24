@@ -1,15 +1,15 @@
 from __future__ import annotations
 
+import logging
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import click
 import httpx
 
 from ._progress import fmt_duration
-
 from .batch import run_folder_streaming, transcribe_directory
 from .canvas import CourseEntry, list_courses, load_courses_yaml
 from .claim import (
@@ -121,8 +121,40 @@ _MODEL = click.option("--model", default=None, help="Override TRANSCRIBER_MODEL 
 
 
 @click.group()
-def main() -> None:
+@click.option("-v", "--verbose", is_flag=True, help="Show DEBUG-level logging.")
+@click.option("-q", "--quiet", is_flag=True, help="Only show warnings and errors.")
+def main(verbose: bool, quiet: bool) -> None:
     """Download Panopto recordings and transcribe them locally."""
+    # The operational modules log progress via the stdlib `logging` module.
+    # Without this call the root logger defaults to WARNING and every
+    # `logger.info()` progress line is silently dropped, so configure it here
+    # at the entry point. Logs go to stderr; click.echo output stays on stdout.
+    if quiet:
+        level = logging.WARNING
+    elif verbose:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)-7s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+
+# ---- setup / auth -----------------------------------------------------------
+
+@main.command("dump-tokens")
+def dump_tokens_cmd() -> None:
+    """Export Canvas token + Panopto browser cookies to `.tokens/` for reuse.
+
+    Run this on a machine that is signed in to Panopto in your browser; it
+    writes `.tokens/panopto_cookies.txt` (Netscape format) plus helper files.
+    Copy the cookies file to a headless server and point `COOKIES_FILE` at it.
+    The download/run commands also do this automatically before each run.
+    """
+    cfg = Config.load()
+    _dump_tokens(cfg)
 
 
 # ---- single-session commands ------------------------------------------------
@@ -292,7 +324,10 @@ def run_folder_cmd(
         cookies_profile=cfg.cookies_profile,
         cookies_file=cfg.cookies_file,
     )
-    click.echo(f"Transcribing all media in {cfg.download_dir} with {t.name}. Transcripts → {transcript_dir}")
+    click.echo(
+        f"Transcribing all media in {cfg.download_dir} with {t.name}. "
+        f"Transcripts → {transcript_dir}"
+    )
     results = transcribe_directory(cfg.download_dir, t, transcript_dir)
     click.echo(f"Done. {len(results)} new transcript(s) in {transcript_dir}")
 
@@ -532,9 +567,13 @@ def match_orphans_cmd(
     CALENDAR_ICS, and matches them to courses in COURSES_YAML.
     """
     from datetime import timedelta
+
     from .match_calendar import (
-        build_course_index, date_to_term_label, expand_class_events,
-        parse_filename_datetime, pick_course,
+        build_course_index,
+        date_to_term_label,
+        expand_class_events,
+        parse_filename_datetime,
+        pick_course,
     )
 
     cfg = Config.load()
@@ -550,7 +589,7 @@ def match_orphans_cmd(
     click.echo(f"Scanning {len(files)} orphan file(s) in {orphans_dir}.")
 
     # Need calendar spanning earliest..latest transcript date
-    timestamps: dict[Path, "datetime"] = {}
+    timestamps: dict[Path, datetime] = {}
     for f in files:
         dt = parse_filename_datetime(f.name)
         if dt is not None:
@@ -591,7 +630,7 @@ def match_orphans_cmd(
     # For --print-unmatched: collect per-orphan details
     unmatched: list[dict] = []
 
-    for guid, paths in by_guid.items():
+    for _guid, paths in by_guid.items():
         # Use the first parseable timestamp for this group (all should be equal).
         dt = None
         for p in paths:
@@ -787,12 +826,12 @@ def verify_transcripts_cmd(
 
     Without --move-orphans-to or --delete-orphans, runs as a dry-run report.
     """
+    from .inventory import load_panopto_cookies
     from .verify import (
         all_files_for_guid,
         collect_transcripts,
         list_folder_sessions,
     )
-    from .inventory import load_panopto_cookies
 
     if move_to and delete_orphans:
         raise click.BadParameter(
@@ -1092,12 +1131,15 @@ def discover_folders_cmd(
 
         try:
             for i, entry in enumerate(todo, start=1):
-                label = entry.code or entry.name or f"canvas#{entry.canvas_id}"
+                canvas_id = entry.canvas_id
+                if canvas_id is None:
+                    continue  # filtered out by the todo comprehension above
+                label = entry.code or entry.name or f"canvas#{canvas_id}"
                 prefix = f"[{i}/{len(todo)}]"
 
                 try:
                     launch = find_panopto_tab_url(
-                        cfg.canvas_url, cfg.canvas_token, entry.canvas_id
+                        cfg.canvas_url, cfg.canvas_token, canvas_id
                     )
                 except httpx.HTTPStatusError as e:
                     failed.append((label, f"tabs API {e.response.status_code}"))
@@ -1114,7 +1156,7 @@ def discover_folders_cmd(
                     page.goto(launch, wait_until="networkidle", timeout=60_000)
                     folder_id = extract_folder_id_from_page(page)
                     if folder_id:
-                        updates[entry.canvas_id] = folder_id
+                        updates[canvas_id] = folder_id
                         click.echo(f"{prefix} {label} — {folder_id}")
                     else:
                         failed.append((label, "no folderID in launched page"))
@@ -1135,7 +1177,7 @@ def discover_folders_cmd(
         modified = update_yaml_in_place(courses_yaml, updates)
         click.echo(f"\nWrote {modified} new GUID(s) to {courses_yaml}.")
     else:
-        click.echo(f"\nNo updates to write.")
+        click.echo("\nNo updates to write.")
 
     click.echo(
         f"Summary: {len(updates)} discovered, "
@@ -1210,7 +1252,7 @@ def list_courses_cmd(state: str, out: Path | None) -> None:
                 f"    name: {_yaml_str(c.name)}",
                 f"    code: {_yaml_str(c.course_code)}",
                 f"    term: {_yaml_str(c.term)}",
-                f"    panopto_folder: \"\"  # TODO",
+                "    panopto_folder: \"\"  # TODO",
             ]
         out.write_text("\n".join(lines) + "\n")
         click.echo(f"Wrote starter mapping to {out}")

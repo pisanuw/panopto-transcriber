@@ -4,9 +4,6 @@ skipping anything that already has a transcript in the output directory.
 from __future__ import annotations
 
 import logging
-
-logger = logging.getLogger(__name__)
-
 import time
 from pathlib import Path
 
@@ -23,6 +20,8 @@ from .downloader import (
     _ydl_opts,
 )
 from .transcribers.base import Transcriber, TranscriptionResult
+
+logger = logging.getLogger(__name__)
 
 MEDIA_EXTENSIONS = {".mp4", ".m4a", ".mp3", ".wav", ".mkv", ".webm", ".mov"}
 
@@ -91,7 +90,7 @@ def transcribe_directory(
         )
 
     total = time.monotonic() - batch_start
-    logger.error(
+    logger.info(
         f"Transcribed {len(results)} file(s) in {fmt_duration(total)}"
         + (f"; {failures} failure(s)" if failures else "")
     )
@@ -197,7 +196,7 @@ def run_folder_streaming(
         )
 
     total = time.monotonic() - batch_start
-    logger.error(
+    logger.info(
         f"Streamed {len(results)} session(s) in {fmt_duration(total)}"
         + (f"; {failures} failure(s)" if failures else "")
     )

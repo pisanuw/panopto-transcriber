@@ -11,9 +11,6 @@ enumerates folder contents automatically.
 from __future__ import annotations
 
 import logging
-
-logger = logging.getLogger(__name__)
-
 import re
 import time
 import uuid
@@ -23,6 +20,8 @@ from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 
 from ._progress import fmt_duration
+
+logger = logging.getLogger(__name__)
 
 GUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -83,7 +82,8 @@ def _expired_session_error(
     if cookies_file:
         hint = (
             f"the cookies in {cookies_file} have expired. "
-            f"Re-export them on a machine signed in to https://{host} (uv run panopto-transcriber dump-tokens), "
+            f"Re-export them on a machine signed in to https://{host} "
+            f"(uv run panopto-transcriber dump-tokens), "
             f"then copy the file back to {cookies_file}."
         )
     else:
@@ -267,7 +267,7 @@ def download_folder(
         )
 
     total = time.monotonic() - batch_start
-    logger.error(
+    logger.info(
         f"Downloaded {len(paths)} new file(s) in {fmt_duration(total)}"
         + (f"; {failures} failure(s)" if failures else "")
     )
