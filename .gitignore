@@ -7,13 +7,22 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 
+# build artifacts
+dist/
+build/
+
 # uv
 .python-version
 
 # secrets / state
 .env
+*.asc
 .panopto-token.json
 .tokens/
+
+# generated config — contains real Canvas course IDs + Panopto folder GUIDs.
+# Generate your own with `list-courses --out courses.yml`; see courses.example.yml.
+courses.yml
 
 # media + outputs
 downloads/
