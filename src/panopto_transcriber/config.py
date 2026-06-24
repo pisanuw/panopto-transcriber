@@ -28,7 +28,7 @@ class Config:
     whisper_cpp_bin: str
 
     @classmethod
-    def load(cls) -> "Config":
+    def load(cls) -> Config:
         download_dir = Path(os.getenv("DOWNLOAD_DIR", "./downloads")).expanduser().resolve()
         transcript_dir = Path(os.getenv("TRANSCRIPT_DIR", "./transcripts")).expanduser().resolve()
         download_dir.mkdir(parents=True, exist_ok=True)

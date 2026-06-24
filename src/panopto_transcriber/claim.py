@@ -16,15 +16,14 @@ create works without additional locking primitives.
 from __future__ import annotations
 
 import logging
-
-logger = logging.getLogger(__name__)
-
 import os
 import socket
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_STALE_SECONDS = 1800  # 30 minutes
 DEFAULT_HEARTBEAT_SECONDS = 60
@@ -90,7 +89,7 @@ class Heartbeat:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
-    def __enter__(self) -> "Heartbeat":
+    def __enter__(self) -> Heartbeat:
         self._thread = threading.Thread(target=self._beat, daemon=True)
         self._thread.start()
         return self

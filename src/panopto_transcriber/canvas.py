@@ -6,9 +6,9 @@ the server stops sending it. Authentication is a bearer token (Canvas's
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 import httpx
 import yaml
@@ -38,7 +38,9 @@ def _paginate(client: httpx.Client, url: str, params: list[tuple[str, str]]) -> 
     next_url: str | None = url
     next_params: list[tuple[str, str]] | None = params
     while next_url:
-        r = client.get(next_url, params=next_params)
+        # httpx's stub types `params` invariantly, so a concrete
+        # list[tuple[str, str]] isn't accepted as the wider value-type union.
+        r = client.get(next_url, params=next_params)  # type: ignore[arg-type]
         r.raise_for_status()
         body = r.json()
         if not isinstance(body, list):
