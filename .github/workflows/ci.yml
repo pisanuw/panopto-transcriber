@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: lint + typecheck + test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        # Base deps + the `dev` group (ruff/mypy/pytest). The optional
+        # `openai-whisper` / `discover` extras pull multi-GB binaries that the
+        # test/lint/type gates don't need, so they are intentionally omitted.
+        run: uv sync --python ${{ matrix.python-version }} --dev
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Typecheck (mypy)
+        run: uv run mypy
+
+      - name: Test (pytest)
+        run: uv run pytest -q
+
+      - name: CLI smoke test
+        run: |
+          uv run panopto-transcriber --help
+          uv run panopto-transcriber dump-tokens --help
+
+  build:
+    name: build (wheel + sdist)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Check the built package imports
+        run: |
+          uv run --no-project --with dist/*.whl \
+            python -c "import panopto_transcriber; print('import OK')"
+
+  secret-scan:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo mv gitleaks /usr/local/bin/
+
+      - name: Scan the tree for committed secrets
+        # Scans the checked-out files (tracked content). Fails the build if any
+        # credential, key, or token is found — the guard against re-committing
+        # the .env / .tokens / *.asc material this repo is careful to ignore.
+        run: gitleaks dir . --redact --verbose
