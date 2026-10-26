@@ -45,7 +45,7 @@ def load_panopto_cookies(
         source = extract_cookies_from_browser(cookies_browser, profile=cookies_profile)
     for c in source:
         if c.domain and "panopto.com" in c.domain:
-            cookies[c.name] = c.value
+            cookies[c.name] = c.value or ""
     return cookies
 
 

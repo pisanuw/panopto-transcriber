@@ -1,15 +1,16 @@
 """Auto-populate `panopto_folder` GUIDs in courses.yml by driving the LTI launch.
 
 For each course in the YAML whose `panopto_folder` is still empty, we:
-  1. Ask Canvas if the course has a Panopto tab in its visible nav. If not,
-     the course is silently skipped — many courses simply don't use Panopto.
-  2. Ask Canvas for a `sessionless_launch` URL — Canvas signs an LTI 1.x
-     launch payload and embeds a one-time token in the returned URL.
-  3. Drive Playwright (with the user's Chrome cookies pre-loaded into the
-     context) to that URL. Canvas's auto-submitting form POSTs to Panopto,
-     Panopto sets its session cookie, and the final page URL contains
-     `folderID=<GUID>` — which we extract.
-  4. Rewrite courses.yml line-by-line so existing comments are preserved.
+  1. Ask Canvas for the course's nav tabs via `/api/v1/courses/:id/tabs` and
+     find the visible (non-hidden) Panopto tab. If there isn't one, the course
+     is silently skipped — many courses simply don't use Panopto. We use the
+     tab's `full_url`, which is the same link a user clicks in the left nav.
+  2. Drive Playwright (with the user's Chrome cookies pre-loaded into the
+     context) to that tab URL. Canvas runs the LTI launch and auto-submits a
+     form that POSTs to Panopto, Panopto sets its session cookie, and the
+     final page (or one of its frames) contains `folderID=<GUID>` — which we
+     extract from the URL or the rendered HTML.
+  3. Rewrite courses.yml line-by-line so existing comments are preserved.
 
 Playwright is an optional dep (uv extra `discover`); the import is lazy so
 the rest of the CLI keeps working without it.
@@ -17,14 +18,13 @@ the rest of the CLI keeps working without it.
 from __future__ import annotations
 
 import logging
-
-logger = logging.getLogger(__name__)
-
 import re
 from pathlib import Path
 
 import httpx
 from yt_dlp.cookies import extract_cookies_from_browser
+
+logger = logging.getLogger(__name__)
 
 # Matches `folderID=<GUID>` whether the GUID is bare, wrapped in literal
 # quotes, or URL-encoded as %22 (which Panopto's embed iframe URL uses,
